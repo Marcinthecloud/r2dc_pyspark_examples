@@ -54,14 +54,14 @@ spark-warehouse/
 logs/
 
 # Data files (uncomment if you don't want to commit data)
-# *.csv
-# *.parquet
-# *.json
-# *.txt
-# data/
+*.csv
+*.parquet
+*.json
+*.txt
+data/
 
 # SQL files with sensitive data
-# *.sql
+*.sql
 
 # Configuration with credentials (IMPORTANT: Keep this uncommented)
 r2dc_spark_config.py
@@ -79,3 +79,4 @@ r2dc_spark_config.py
 *.bak
 *.swp
 *~.nib
+.claude

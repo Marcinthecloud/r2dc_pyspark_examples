@@ -7,8 +7,8 @@ A collection of Python scripts (examples) for managing Apache Iceberg tables on 
 - **Create**: Create namespaces and tables from SQL files
 - **Insert**: Insert data from SQL files, CSV, or Parquet
 - **Delete**: Delete data with optional cleanup of unreferenced files
-- **Drop**: Drop tables or namespaces with optional purge of all files from storage
-- **Shared Configuration**: Centralized Spark session management
+- **Drop**: Drop tables or namespaces with optional purge of all files from R2
+- **Spark Config Example**: Centralized Spark config example
 
 ## Prerequisites
 
