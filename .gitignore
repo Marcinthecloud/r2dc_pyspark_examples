@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PySpark
+derby.log
+metastore_db/
+spark-warehouse/
+.spark-warehouse/
+
+# Logs
+*.log
+logs/
+
+# Data files (uncomment if you don't want to commit data)
+# *.csv
+# *.parquet
+# *.json
+# *.txt
+# data/
+
+# SQL files with sensitive data
+# *.sql
+
+# Configuration with credentials (IMPORTANT: Keep this uncommented)
+r2dc_spark_config.py
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~.nib
