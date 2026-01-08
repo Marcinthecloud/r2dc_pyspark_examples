@@ -80,3 +80,7 @@ r2dc_spark_config.py
 *.swp
 *~.nib
 .claude
+*.csv
+*.json
+*.parquet
+*.log

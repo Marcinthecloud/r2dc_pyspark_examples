@@ -8,6 +8,7 @@ A collection of Python scripts (examples) for managing Apache Iceberg tables on 
 - **Insert**: Insert data from SQL files, CSV, or Parquet
 - **Delete**: Delete data with optional cleanup of unreferenced files
 - **Drop**: Drop tables or namespaces with optional purge of all files from R2
+- **Orphan File Removal**: Clean up old snapshots and orphan files for a single table
 - **Spark Config Example**: Centralized Spark config example
 
 ## Prerequisites
@@ -188,17 +189,57 @@ python r2dc_drop.py --table my_namespace.users --purge --force
 - `--purge-tables` only works with `--cascade` for namespace operations
 - By default, you will be prompted to confirm destructive operations
 
+### Orphan File Removal Operations
+
+The orphan file removal script performs maintenance on a single table by expiring old snapshots and removing orphan files that are no longer referenced by any snapshot.
+
+**Clean up a table with default settings:**
+```bash
+python r2dc_orphan_file_removal.py pokegraph.pokemon
+```
+
+This will:
+1. Expire snapshots older than 7 days
+2. Remove orphan files older than 3 days
+
+**Clean up with custom retention periods:**
+```bash
+python r2dc_orphan_file_removal.py pokegraph.pokemon 5 2
+```
+
+This will:
+1. Expire snapshots older than 5 days
+2. Remove orphan files older than 2 days
+
+**Usage:**
+```bash
+python r2dc_orphan_file_removal.py <namespace.table> [expire_days] [orphan_days]
+```
+
+**Parameters:**
+- `namespace.table`: Required. Fully qualified table name
+- `expire_days`: Optional. Default 7. Expire snapshots older than N days
+- `orphan_days`: Optional. Default 3. Remove orphan files older than N days
+
+**IMPORTANT NOTES:**
+- The script only deletes data **older than** the specified days, not within that time period
+- For example, with `expire_days=7`, only snapshots created MORE than 7 days ago are expired
+- All snapshots and files within the retention window are kept safe
+- This operation requires S3 credentials to be configured in `r2dc_spark_config.py`
+- Run this periodically to keep storage costs down by removing unused files
+
 ## File Structure
 
 ```
 pyspark/
-├── r2dc_spark_config.py    # Shared Spark configuration
-├── r2dc_create.py           # Create namespaces and tables
-├── r2dc_insert.py           # Insert operations
-├── r2dc_delete.py           # Delete operations with cleanup
-├── r2dc_drop.py             # Drop tables/namespaces with optional purge to cleanup files
-├── requirements.txt         # Python dependencies
-└── README.md                # This file
+├── r2dc_spark_config.py          # Shared Spark configuration
+├── r2dc_create.py                # Create namespaces and tables
+├── r2dc_insert.py                # Insert operations
+├── r2dc_delete.py                # Delete operations with cleanup
+├── r2dc_drop.py                  # Drop tables/namespaces with optional purge to cleanup files
+├── r2dc_orphan_file_removal.py   # Orphan file cleanup for single table
+├── requirements.txt              # Python dependencies
+└── README.md                     # This file
 ```
 
 ## Write Modes
@@ -238,7 +279,10 @@ python r2dc_insert.py --show sales_data.sales --limit 10
 # 5. Delete old records with cleanup
 python r2dc_delete.py --table sales_data.sales --where "date < '2024-01-01'" --cleanup
 
-# 6. Drop table and remove all files from storage (when done)
+# 6. Perform maintenance to clean up old snapshots and orphan files
+python r2dc_orphan_file_removal.py sales_data.sales
+
+# 7. Drop table and remove all files from storage (when done)
 python r2dc_drop.py --table sales_data.sales --purge
 ```
 
