@@ -22,6 +22,7 @@ import argparse
 import json
 import sys
 import math
+import textwrap
 
 # ---------------------------------------------------------------------------
 # Configurable thresholds (MB unless noted)
@@ -70,12 +71,25 @@ def _score(value, yellow_threshold, red_threshold):
     return GREEN
 
 def _score_label(score):
-    """Terminal-friendly colored label."""
+    """Terminal-friendly colored badge label."""
     if not USE_COLOR:
         return f"{score:>6}"
-    colors = {GREEN: "\033[92m", YELLOW: "\033[93m", RED: "\033[91m"}
+    colors = {GREEN: "\033[42;30m", YELLOW: "\033[43;30m", RED: "\033[41;97m"}
     reset = "\033[0m"
-    return f"{colors.get(score, '')}{score}{reset}"
+    return f"{colors.get(score, '')} {score} {reset}"
+
+def _section_title(title):
+    """Orange-colored section title."""
+    if not USE_COLOR:
+        return title
+    return f"\033[38;5;208m{title}\033[0m"
+
+def _kv_line(label, value, width=70):
+    """Format a key-value line with right-aligned value."""
+    padding = width - len(label) - len(str(value))
+    if padding < 2:
+        padding = 2
+    return f"  {label}{'.' * padding}{value}"
 
 def _fmt_bytes(b):
     """Human-readable byte string."""
@@ -563,159 +577,176 @@ def compute_scores(snapshot_stats, manifest_stats, file_stats):
 
 
 # Terminal output
+def _scoreboard_line(badge, label, short_value, width=70):
+    """Format a scoreboard row: [BADGE] Label ..... value"""
+    badge_str = _score_label(badge)
+    # Account for ANSI codes in badge width for alignment
+    visible_badge_len = len(badge) + 2  # " BADGE "
+    label_part = f"  {badge_str}  {label}"
+    visible_len = 2 + visible_badge_len + 2 + len(label)
+    padding = width - visible_len - len(str(short_value))
+    if padding < 2:
+        padding = 2
+    return f"{label_part}{'.' * padding}{short_value}"
+
+def _verdict_line(label, badge, message):
+    """Format a verdict line: LABEL [BADGE] message"""
+    return f"  {label}  {_score_label(badge)}  {message}"
+
+
 def print_report(table_name, snapshot_stats, manifest_stats, file_stats, history_stats, scores, target_file_size_mb):
     """Print a human-readable report to the terminal."""
-    W = 80
+    W = 72
+    SEP = "  " + "\u2500" * (W - 2)
 
+    # --- Header ---
     print()
     print("=" * W)
-    print(f"  ICEBERG FILE ANALYSIS: {table_name}")
+    print(f"  {_section_title(f'ICEBERG FILE ANALYSIS: {table_name}')}")
     print("=" * W)
-    print(f"  Analysis Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Target File Size : {target_file_size_mb} MB")
+    print(f"  Analysis Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  Target File Size : {target_file_size_mb} MB")
     print("=" * W)
 
-    print()
-    print("-" * W)
-    print("  TABLE OVERVIEW")
-    print("-" * W)
-    print(f"  Total Data Files     : {file_stats.get('total_data_files', 0):,}")
-    print(f"  Total Delete Files   : {file_stats.get('total_delete_files', 0):,}")
-    print(f"  Total Data Size      : {file_stats.get('total_data_size_human', 'N/A')}")
-    print(f"  Total Records        : {file_stats.get('total_records', 0):,}")
-    print(f"  Partition Count      : {file_stats.get('partition_count', 0):,}")
-    print(f"  Snapshot Count       : {snapshot_stats.get('snapshot_count', 0):,}")
-    print(f"  Manifest Count       : {manifest_stats.get('manifest_count', 0):,}")
+    # --- Table overview ---
+    print(SEP)
+    print(f"  {_section_title('TABLE OVERVIEW')}")
+    print(SEP)
+    print(_kv_line("Total Data Files", f"{file_stats.get('total_data_files', 0):,}", W))
+    print(_kv_line("Total Delete Files", f"{file_stats.get('total_delete_files', 0):,}", W))
+    print(_kv_line("Total Data Size", file_stats.get('total_data_size_human', 'N/A'), W))
+    print(_kv_line("Total Records", f"{file_stats.get('total_records', 0):,}", W))
+    print(_kv_line("Partition Count", f"{file_stats.get('partition_count', 0):,}", W))
+    print(_kv_line("Snapshot Count", f"{snapshot_stats.get('snapshot_count', 0):,}", W))
+    print(_kv_line("Manifest Count", f"{manifest_stats.get('manifest_count', 0):,}", W))
 
+    # --- File size distribution ---
     dist = file_stats.get("file_size_distribution", {})
     print()
-    print("-" * W)
-    print("  FILE SIZE DISTRIBUTION")
-    print("-" * W)
-    print(f"  Min        : {dist.get('min_human', 'N/A')}")
-    print(f"  P10        : {dist.get('p10_human', 'N/A')}")
-    print(f"  Median     : {dist.get('median_human', 'N/A')}")
-    print(f"  Average    : {dist.get('avg_human', 'N/A')}")
-    print(f"  P90        : {dist.get('p90_human', 'N/A')}")
-    print(f"  Max        : {dist.get('max_human', 'N/A')}")
-    print(f"  Std Dev    : {_fmt_bytes(dist.get('std_dev_bytes', 0))}")
-    print(f"  CV         : {dist.get('cv', 0):.4f}")
+    print(SEP)
+    print(f"  {_section_title('FILE SIZE DISTRIBUTION')}")
+    print(SEP)
+    print(_kv_line("Min", dist.get('min_human', 'N/A'), W))
+    print(_kv_line("P10", dist.get('p10_human', 'N/A'), W))
+    print(_kv_line("Median", dist.get('median_human', 'N/A'), W))
+    print(_kv_line("Average", dist.get('avg_human', 'N/A'), W))
+    print(_kv_line("P90", dist.get('p90_human', 'N/A'), W))
+    print(_kv_line("Max", dist.get('max_human', 'N/A'), W))
+    print(_kv_line("Std Dev", _fmt_bytes(dist.get('std_dev_bytes', 0)), W))
+    print(_kv_line("CV", f"{dist.get('cv', 0):.4f}", W))
 
-    fpp = file_stats.get("files_per_partition", {})
+    # --- Small file analysis ---
     print()
-    print("-" * W)
-    print("  FILES PER PARTITION")
-    print("-" * W)
-    print(f"  Min   : {fpp.get('min', 0)}")
-    print(f"  Avg   : {fpp.get('avg', 0):.1f}")
-    print(f"  Median: {fpp.get('median', 0)}")
-    print(f"  Max   : {fpp.get('max', 0)}")
+    print(SEP)
+    print(f"  {_section_title('SMALL FILE ANALYSIS')}")
+    print(SEP)
+    sf = file_stats.get('small_files', 0)
+    sf_ratio = file_stats.get('small_file_ratio', 0)
+    csf = file_stats.get('compactable_small_files', 0)
+    csf_ratio = file_stats.get('compactable_small_file_ratio', 0)
+    tf = file_stats.get('tiny_files', 0)
+    tf_ratio = file_stats.get('tiny_file_ratio', 0)
+    print(_kv_line(f"Small files (<{SMALL_FILE_THRESHOLD_MB}MB)", f"{sf:,} ({sf_ratio*100:.1f}%)", W))
+    print(_kv_line("  - Compactable (>1 file/part)", f"{csf:,} ({csf_ratio*100:.1f}%)", W))
+    print(_kv_line("  - Not compactable (1/part)", f"{sf - csf:,}", W))
+    print(_kv_line(f"Tiny files (<{TINY_FILE_THRESHOLD_MB}MB)", f"{tf:,} ({tf_ratio*100:.1f}%)", W))
+    print(_kv_line("Target file size", f"{target_file_size_mb} MB", W))
+    print(_kv_line("Actual file count", f"{file_stats.get('total_data_files', 0):,}", W))
+    print(_kv_line("Compactable partitions", f"{file_stats.get('compactable_partitions', 0):,} / {file_stats.get('partition_count', 0):,}", W))
 
-    print()
-    print("-" * W)
-    print("  SMALL FILE ANALYSIS")
-    print("-" * W)
-    print(f"  Small files (<{SMALL_FILE_THRESHOLD_MB}MB)          : {file_stats.get('small_files', 0):,}  ({file_stats.get('small_file_ratio', 0)*100:.1f}%)")
-    print(f"   - Compactable (>1 file/part) : {file_stats.get('compactable_small_files', 0):,}  ({file_stats.get('compactable_small_file_ratio', 0)*100:.1f}%)")
-    print(f"   - Not compactable (1/part)   : {file_stats.get('small_files',0) - file_stats.get('compactable_small_files',0):,}")
-    print(f"  Tiny files  (<{TINY_FILE_THRESHOLD_MB}MB)           : {file_stats.get('tiny_files', 0):,}  ({file_stats.get('tiny_file_ratio', 0)*100:.1f}%)")
-    print(f"  Target file size              : {target_file_size_mb} MB")
-    print(f"  Actual file count             : {file_stats.get('total_data_files', 0):,}")
-    print(f"  Compactable partitions        : {file_stats.get('compactable_partitions', 0):,} / {file_stats.get('partition_count', 0):,}")
-
+    # --- Partition sizing ---
     op = file_stats.get("over_partitioning", {})
     print()
-    print("-" * W)
-    print("  PARTITION SIZING")
-    print("-" * W)
-    print(f"  Avg partition size            : {op.get('avg_partition_size_human', 'N/A')}")
-    print(f"  Target file size              : {target_file_size_mb} MB")
-    print(f"  Single-file small partitions  : {op.get('single_file_small_partitions', 0):,} / {file_stats.get('partition_count', 0):,}")
-    print(f"  Over-partition ratio          : {op.get('over_partition_ratio', 0)*100:.1f}%")
+    print(SEP)
+    print(f"  {_section_title('PARTITION SIZING')}")
+    print(SEP)
+    print(_kv_line("Avg partition size", op.get('avg_partition_size_human', 'N/A'), W))
+    print(_kv_line("Target file size", f"{target_file_size_mb} MB", W))
+    print(_kv_line("Single-file small partitions", f"{op.get('single_file_small_partitions', 0):,} / {file_stats.get('partition_count', 0):,}", W))
+    print(_kv_line("Over-partition ratio", f"{op.get('over_partition_ratio', 0)*100:.1f}%", W))
 
+    # --- Metadata health ---
     print()
-    print("-" * W)
-    print("  METADATA HEALTH")
-    print("-" * W)
-    print(f"  Snapshots              : {snapshot_stats.get('snapshot_count', 0):,}")
-    print(f"  Oldest Snapshot        : {snapshot_stats.get('oldest_snapshot', 'N/A')}")
-    print(f"  Newest Snapshot        : {snapshot_stats.get('newest_snapshot', 'N/A')}")
-    print(f"  Total Manifests        : {manifest_stats.get('manifest_count', 0):,}")
-    print(f"  Total Manifest Size    : {manifest_stats.get('total_manifest_size_human', 'N/A')}")
-    print(f"  Avg Data Files/Manifest: {manifest_stats.get('avg_data_files_per_manifest', 0):.1f}")
-    print(f"  Delete File Refs       : {manifest_stats.get('total_delete_file_refs', 0):,}")
-    print(f"  History Entries        : {history_stats.get('history_entries', 0):,}")
+    print(SEP)
+    print(f"  {_section_title('METADATA HEALTH')}")
+    print(SEP)
+    print(_kv_line("Snapshots", f"{snapshot_stats.get('snapshot_count', 0):,}", W))
+    print(_kv_line("Oldest Snapshot", str(snapshot_stats.get('oldest_snapshot', 'N/A')), W))
+    print(_kv_line("Newest Snapshot", str(snapshot_stats.get('newest_snapshot', 'N/A')), W))
+    print(_kv_line("Total Manifests", f"{manifest_stats.get('manifest_count', 0):,}", W))
+    print(_kv_line("Total Manifest Size", manifest_stats.get('total_manifest_size_human', 'N/A'), W))
+    print(_kv_line("Avg Data Files/Manifest", f"{manifest_stats.get('avg_data_files_per_manifest', 0):.1f}", W))
+    print(_kv_line("Delete File Refs", f"{manifest_stats.get('total_delete_file_refs', 0):,}", W))
+    print(_kv_line("History Entries", f"{history_stats.get('history_entries', 0):,}", W))
 
+    # --- Per-partition detail (top 10 worst) ---
     parts = file_stats.get("partitions", {})
     if parts:
         sorted_parts = sorted(parts.items(), key=lambda x: x[1]["file_count"], reverse=True)
         show_count = min(10, len(sorted_parts))
         print()
-        print("-" * W)
-        print(f"  TOP {show_count} PARTITIONS BY FILE COUNT")
-        print("-" * W)
-        print(f"  {'Partition':<35} {'Files':>6} {'Size':>10} {'Avg':>10} {'Small%':>7} {'CV':>6}")
-        print(f"  {'-'*35} {'-'*6} {'-'*10} {'-'*10} {'-'*7} {'-'*6}")
+        print(SEP)
+        print(f"  {_section_title(f'TOP {show_count} PARTITIONS BY FILE COUNT')}")
+        print(SEP)
+        print(f"  {'Partition':<35} {'Files':>6} {'Size':>10} {'Avg':>10} {'Sm%':>5} {'CV':>5}")
+        ln = "\u2500"
+        print(f"  {ln*35} {ln*6} {ln*10} {ln*10} {ln*5} {ln*5}")
         for pk, pdata in sorted_parts[:show_count]:
-            # Truncate partition key for display
             display_key = pk if len(pk) <= 34 else pk[:31] + "..."
             small_pct = pdata["small_file_ratio"] * 100
-            print(f"  {display_key:<35} {pdata['file_count']:>6} {pdata['total_size_human']:>10} {pdata['avg_file_size_human']:>10} {small_pct:>6.1f}% {pdata['file_size_cv']:>6.2f}")
+            print(f"  {display_key:<35} {pdata['file_count']:>6} {pdata['total_size_human']:>10} {pdata['avg_file_size_human']:>10} {small_pct:>4.0f}% {pdata['file_size_cv']:>5.2f}")
 
     # --- Scoreboard ---
     print()
-    print("=" * W)
-    print("  COMPACTION SCOREBOARD")
-    print("=" * W)
-    print()
-    print("  DATA COMPACTION INDICATORS:")
-    print(f"    Compactable Small Files : {_score_label(scores['small_file_ratio']['score'])}  {scores['small_file_ratio']['detail']}")
-    print(f"    Files Per Partition     : {_score_label(scores['files_per_partition']['score'])}  {scores['files_per_partition']['detail']}")
-    print(f"    File Size Uniformity    : {_score_label(scores['file_size_uniformity']['score'])}  {scores['file_size_uniformity']['detail']}")
-    print(f"    Delete Files            : {_score_label(scores['delete_files']['score'])}  {scores['delete_files']['detail']}")
-    print(f"    Write Amplification     : {_score_label(scores['write_amplification']['score'])}  {scores['write_amplification']['detail']}")
-    print()
-    print("  PARTITION HEALTH:")
-    print(f"    Over-Partitioning       : {_score_label(scores['over_partitioning']['score'])}  {scores['over_partitioning']['detail']}")
-    print(f"    Tiny Files (info)       : {_score_label(scores['tiny_file_ratio']['score'])}  {scores['tiny_file_ratio']['detail']}")
-    print()
-    print("  METADATA COMPACTION INDICATORS:")
-    print(f"    Snapshot Count          : {_score_label(scores['snapshot_count']['score'])}  {scores['snapshot_count']['detail']}")
-    print(f"    Manifests/Snapshot      : {_score_label(scores['manifests_per_snapshot']['score'])}  {scores['manifests_per_snapshot']['detail']}")
-    print(f"    Manifest Total Size     : {_score_label(scores['manifest_total_size']['score'])}  {scores['manifest_total_size']['detail']}")
+    print(SEP)
+    print(f"  {_section_title('COMPACTION SCOREBOARD')}")
+    print(SEP)
     print()
 
-    print("-" * W)
+    # Build short summaries for right-aligned display
+    s = scores
+    print(f"  DATA COMPACTION INDICATORS:")
+    print(_scoreboard_line(s['small_file_ratio']['score'], "Compactable Small Files", f"{s['small_file_ratio']['compactable_small_files']} compactable", W))
+    print(_scoreboard_line(s['files_per_partition']['score'], "Files Per Partition", f"Avg {s['files_per_partition']['avg']:.1f} files/part", W))
+    print(_scoreboard_line(s['file_size_uniformity']['score'], "File Size Uniformity", f"CV: {s['file_size_uniformity']['value']:.2f}", W))
+    print(_scoreboard_line(s['delete_files']['score'], "Delete Files", f"{s['delete_files']['total_delete_files']} delete files", W))
+    wa_summary = f"{s['files_per_partition']['avg']:.0f} file/partition" if s['write_amplification']['compactable_partitions'] == 0 else f"{s['write_amplification']['value']:.1f}x amplification"
+    print(_scoreboard_line(s['write_amplification']['score'], "Write Amplification", wa_summary, W))
+    print()
+
+    print(f"  PARTITION HEALTH:")
+    op_summary = f"{s['over_partitioning']['single_file_small_partitions']}/{s['over_partitioning'].get('single_file_small_partitions',0) + file_stats.get('compactable_partitions',0)} single-file small"
+    print(_scoreboard_line(s['over_partitioning']['score'], "Over-Partitioning", op_summary, W))
+    print(_scoreboard_line(s['tiny_file_ratio']['score'], "Tiny Files (info)", f"{file_stats.get('tiny_files',0)} files <{TINY_FILE_THRESHOLD_MB}MB", W))
+    print()
+
+    print(f"  METADATA COMPACTION:")
+    print(_scoreboard_line(s['snapshot_count']['score'], "Snapshot Count", f"{s['snapshot_count']['value']} snapshots retained", W))
+    print(_scoreboard_line(s['manifests_per_snapshot']['score'], "Manifests/Snapshot", f"{s['manifests_per_snapshot']['value']:.1f} per snapshot", W))
+    print(_scoreboard_line(s['manifest_total_size']['score'], "Manifest Total Size", manifest_stats.get('total_manifest_size_human', 'N/A'), W))
+
+    # --- Verdicts ---
+    print()
+    print(SEP)
     dv = scores["data_compaction_verdict"]
     mv = scores["metadata_compaction_verdict"]
-    print(f"  DATA COMPACTION     : {_score_label(dv)}", end="")
-    if dv == GREEN:
-        print("  - No data compaction needed")
-    elif dv == YELLOW:
-        print("  - Consider running compaction")
-    else:
-        print("  - Compaction recommended")
+    dv_msg = {GREEN: "No compaction needed", YELLOW: "Consider compaction", RED: "Compaction recommended"}
+    mv_msg = {GREEN: "Metadata is healthy", YELLOW: "Expire snapshots", RED: "Expire snapshots and rewrite manifests"}
+    print(_verdict_line("DATA COMPACTION", dv, dv_msg.get(dv, "")))
+    print(_verdict_line("META COMPACTION", mv, mv_msg.get(mv, "")))
+    print(SEP)
 
-    print(f"  METADATA COMPACTION : {_score_label(mv)}", end="")
-    if mv == GREEN:
-        print("  - Metadata is healthy")
-    elif mv == YELLOW:
-        print("  - Consider expiring snapshots / rewriting manifests")
-    else:
-        print("  - Expire snapshots and rewrite manifests")
-
-    print("-" * W)
-
+    # --- Recommendations ---
     print()
-    print("  RECOMMENDATIONS:")
+    print(f"  {_section_title('RECOMMENDATIONS')}")
+    print(SEP)
     recs = _build_recommendations(scores, file_stats, snapshot_stats, manifest_stats, table_name)
     if not recs:
-        print("    No action needed. Table is healthy.")
+        print("  No action needed. Table is healthy.")
     for i, rec in enumerate(recs, 1):
-        print(f"    {i}. {rec}")
-
-    print()
-    print("=" * W)
+        lines = textwrap.wrap(rec, width=W - 6)
+        print(f"  {i}. {lines[0]}")
+        for line in lines[1:]:
+            print(f"     {line}")
 
 
 def _build_recommendations(scores, file_stats, snapshot_stats, manifest_stats, table_name):
