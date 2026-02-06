@@ -9,6 +9,7 @@ A collection of Python scripts (examples) for managing Apache Iceberg tables on 
 - **Delete**: Delete data with optional cleanup of unreferenced files
 - **Drop**: Drop tables or namespaces with optional purge of all files from R2
 - **Orphan File Removal**: Clean up old snapshots and orphan files for a single table
+- **File Analysis**: Analyze Iceberg table metadata to determine if compaction or re-partitioning is needed
 - **Spark Config Example**: Centralized Spark config example
 
 ## Prerequisites
@@ -228,6 +229,59 @@ python r2dc_orphan_file_removal.py <namespace.table> [expire_days] [orphan_days]
 - This operation requires S3 credentials to be configured in `r2dc_spark_config.py`
 - Run this periodically to keep storage costs down by removing unused files
 
+### File Analysis Operations
+
+The file analysis script inspects Iceberg table metadata (snapshots, manifests, data files, partitions) and produces a compaction health report with GREEN/YELLOW/RED scores and actionable recommendations.
+
+**Analyze a single table:**
+```bash
+python r2dc_file_analysis.py my_namespace.my_table
+```
+
+This will output:
+- Table overview (file count, data size, records, partitions, snapshots, manifests)
+- File size distribution (min, p10, median, avg, p90, max, std dev)
+- Files per partition breakdown
+- Small file analysis distinguishing compactable vs non-compactable files
+- Over-partitioning detection
+- Metadata health (snapshot count, manifest stats)
+- Compaction scoreboard with GREEN/YELLOW/RED ratings
+- Actionable recommendations
+
+**Analyze and save detailed results to JSON:**
+```bash
+python r2dc_file_analysis.py my_namespace.my_table --json analysis_results.json
+```
+
+**Analyze all tables in a namespace:**
+```bash
+python r2dc_file_analysis.py --all my_namespace
+```
+
+**Specify a custom target file size (default: 128 MB):**
+```bash
+python r2dc_file_analysis.py my_namespace.my_table --target-file-size 64
+```
+
+**Disable colored output (for piping or logging):**
+```bash
+python r2dc_file_analysis.py my_namespace.my_table --no-color
+```
+
+**Usage:**
+```bash
+python r2dc_file_analysis.py <namespace.table> [--json PATH] [--target-file-size MB] [--no-color]
+python r2dc_file_analysis.py --all <namespace> [--target-file-size MB] [--no-color]
+```
+
+**What the scores mean:**
+
+| Score | Data Compaction | Metadata Compaction |
+|-------|-----------------|---------------------|
+| GREEN | No compaction needed | Metadata is healthy |
+| YELLOW | Consider running compaction | Consider expiring snapshots |
+| RED | Compaction recommended | Expire snapshots and rewrite manifests |
+
 ## File Structure
 
 ```
@@ -238,6 +292,7 @@ pyspark/
 ├── r2dc_delete.py                # Delete operations with cleanup
 ├── r2dc_drop.py                  # Drop tables/namespaces with optional purge to cleanup files
 ├── r2dc_orphan_file_removal.py   # Orphan file cleanup for single table
+├── r2dc_file_analysis.py         # Iceberg file analysis & compaction advisor
 ├── requirements.txt              # Python dependencies
 └── README.md                     # This file
 ```
@@ -279,10 +334,13 @@ python r2dc_insert.py --show sales_data.sales --limit 10
 # 5. Delete old records with cleanup
 python r2dc_delete.py --table sales_data.sales --where "date < '2024-01-01'" --cleanup
 
-# 6. Perform maintenance to clean up old snapshots and orphan files
+# 6. Check if table needs compaction or maintenance
+python r2dc_file_analysis.py sales_data.sales
+
+# 7. Perform maintenance to clean up old snapshots and orphan files
 python r2dc_orphan_file_removal.py sales_data.sales
 
-# 7. Drop table and remove all files from storage (when done)
+# 8. Drop table and remove all files from storage (when done)
 python r2dc_drop.py --table sales_data.sales --purge
 ```
 
