@@ -1,11 +1,13 @@
 """
 R2 Data Catalog - JSON to Iceberg Table
 Reads JSON files from an R2 bucket and converts them into an Apache Iceberg table.
-Schema is inferred from the JSON data. The resulting table is partitioned by
-days(__ingest_ts) for R2 SQL compatibility.
+Schema is inferred from the JSON data. By default the table is partitioned by
+days(__ingest_ts) for R2 SQL compatibility, but users can specify custom partition
+expressions via --partition-by.
 """
 from r2dc_spark_config import get_spark_session, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT
 import argparse
+import re
 import sys
 from datetime import datetime
 from pyspark.sql import functions as F
@@ -91,7 +93,73 @@ def prepare_dataframe(df, timestamp_col=None):
     return df
 
 
-def create_iceberg_table(spark, df, namespace, table_name, mode="create"):
+def parse_partition_expr(expr_str):
+    """
+    Parses a partition expression string into a PySpark column transform.
+
+    Supported formats:
+        days(col)           → F.days("col")
+        hours(col)          → F.hours("col")
+        months(col)         → F.months("col")
+        years(col)          → F.years("col")
+        bucket(n, col)      → F.bucket(n, "col")
+        truncate(n, col)    → F.truncate(n, "col")
+        col                 → F.col("col")   (identity partition)
+
+    Args:
+        expr_str (str): Partition expression string
+
+    Returns:
+        Column: PySpark partition transform expression
+    """
+    expr_str = expr_str.strip()
+
+    # Transform functions: days(col), hours(col), months(col), years(col)
+    match = re.match(r"^(days|hours|months|years)\((.+)\)$", expr_str)
+    if match:
+        func_name, col_name = match.group(1), match.group(2).strip()
+        transform_fn = getattr(F, func_name)
+        return transform_fn(col_name)
+
+    # bucket(n, col) and truncate(n, col)
+    match = re.match(r"^(bucket|truncate)\((\d+)\s*,\s*(.+)\)$", expr_str)
+    if match:
+        func_name = match.group(1)
+        n = int(match.group(2))
+        col_name = match.group(3).strip()
+        transform_fn = getattr(F, func_name)
+        return transform_fn(n, col_name)
+
+    # Identity partition: just a column name
+    if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", expr_str):
+        return F.col(expr_str)
+
+    raise ValueError(
+        f"Unsupported partition expression: '{expr_str}'. "
+        f"Supported: days(col), hours(col), months(col), years(col), "
+        f"bucket(n, col), truncate(n, col), or col (identity)."
+    )
+
+
+def parse_partition_by(partition_by_list):
+    """
+    Parses a list of partition expression strings into PySpark transforms.
+
+    Args:
+        partition_by_list (list[str]): List of partition expression strings
+
+    Returns:
+        list[Column]: List of PySpark partition transform expressions
+    """
+    exprs = []
+    for expr_str in partition_by_list:
+        parsed = parse_partition_expr(expr_str)
+        print(f"  Partition expression: {expr_str}")
+        exprs.append(parsed)
+    return exprs
+
+
+def create_iceberg_table(spark, df, namespace, table_name, mode="create", partition_exprs=None):
     """
     Creates a partitioned Iceberg table and writes the data.
 
@@ -101,10 +169,14 @@ def create_iceberg_table(spark, df, namespace, table_name, mode="create"):
         namespace (str): Target namespace
         table_name (str): Target table name
         mode (str): 'create' (fail if exists), 'append' (add to existing), 'overwrite' (replace data)
+        partition_exprs (list[Column]): Partition transform expressions. Defaults to [F.days("__ingest_ts")].
 
     Returns:
         str: Fully qualified table name
     """
+    if partition_exprs is None:
+        partition_exprs = [F.days("__ingest_ts")]
+
     fq_table = f"{namespace}.{table_name}"
 
     # Ensure namespace exists
@@ -112,10 +184,10 @@ def create_iceberg_table(spark, df, namespace, table_name, mode="create"):
     print(f"Namespace '{namespace}' ready")
 
     if mode == "create":
-        print(f"Creating table '{fq_table}' with partition by days(__ingest_ts)")
-        df.writeTo(fq_table).using("iceberg").partitionedBy(
-            F.days("__ingest_ts")
-        ).create()
+        print(f"Creating table '{fq_table}'")
+        writer = df.writeTo(fq_table).using("iceberg")
+        writer = writer.partitionedBy(*partition_exprs)
+        writer.create()
     elif mode == "append":
         print(f"Appending to table '{fq_table}'")
         df.writeTo(fq_table).using("iceberg").append()
@@ -155,7 +227,8 @@ def verify_table(spark, fq_table, limit=5):
 
 
 def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=None,
-                    mode="create", multiline=False, sample_ratio=None, verify=True):
+                    mode="create", multiline=False, sample_ratio=None, verify=True,
+                    partition_by=None):
     """
     End-to-end: reads JSON from R2 and writes it as a partitioned Iceberg table.
 
@@ -169,6 +242,7 @@ def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=No
         multiline (bool): Whether JSON files are multi-line
         sample_ratio (float): Optional sampling ratio for schema inference
         verify (bool): Whether to verify the table after creation
+        partition_by (list[str]): Optional partition expressions. Defaults to ['days(__ingest_ts)'].
 
     Returns:
         str: Fully qualified table name
@@ -193,8 +267,17 @@ def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=No
         # Add __ingest_ts
         df = prepare_dataframe(df, timestamp_col=timestamp_col)
 
+        # Parse partition expressions
+        partition_exprs = None
+        if partition_by:
+            print(f"\nCustom partitioning:")
+            partition_exprs = parse_partition_by(partition_by)
+        else:
+            print(f"\nUsing default partitioning: days(__ingest_ts)")
+
         # Write to Iceberg
-        fq_table = create_iceberg_table(spark, df, namespace, table_name, mode=mode)
+        fq_table = create_iceberg_table(spark, df, namespace, table_name,
+                                        mode=mode, partition_exprs=partition_exprs)
 
         # Verify
         if verify:
@@ -216,7 +299,7 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic usage — read all JSON from a bucket
+  # Basic usage — read all JSON from a bucket (partitions by days(__ingest_ts))
   python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events
 
   # Read from a specific prefix (folder)
@@ -225,11 +308,32 @@ Examples:
   # Use an existing timestamp column for partitioning
   python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --timestamp-col event_time
 
+  # Custom partition key — partition by category (identity)
+  python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by category
+
+  # Custom partition key — partition by month instead of day
+  python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by "months(__ingest_ts)"
+
+  # Multiple partition keys
+  python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by "days(__ingest_ts)" --partition-by category
+
+  # Bucket partition (hash-based, good for high-cardinality columns)
+  python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by "bucket(16, user_id)"
+
   # Append to an existing table
   python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --mode append
 
   # Multi-line JSON files
   python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --multiline
+
+Supported partition expressions:
+  days(col)           Time-based partition by day (R2 SQL compatible)
+  hours(col)          Time-based partition by hour
+  months(col)         Time-based partition by month
+  years(col)          Time-based partition by year
+  bucket(n, col)      Hash partition into n buckets
+  truncate(n, col)    Truncate partition (width n)
+  col                 Identity partition (exact column value)
         """,
     )
 
@@ -245,6 +349,10 @@ Examples:
                         help="Enable multi-line JSON parsing (for pretty-printed JSON files)")
     parser.add_argument("--sample-ratio", type=float, default=None,
                         help="Sampling ratio for schema inference (0.0-1.0, default: read all)")
+    parser.add_argument("--partition-by", action="append", default=None,
+                        help="Partition expression (repeatable). Default: days(__ingest_ts). "
+                             "Supports: days(col), hours(col), months(col), years(col), "
+                             "bucket(n, col), truncate(n, col), or col (identity)")
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip table verification after creation")
 
@@ -260,4 +368,5 @@ Examples:
         multiline=args.multiline,
         sample_ratio=args.sample_ratio,
         verify=not args.no_verify,
+        partition_by=args.partition_by,
     )
