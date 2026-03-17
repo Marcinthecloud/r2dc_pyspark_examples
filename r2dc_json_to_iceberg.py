@@ -93,6 +93,16 @@ def prepare_dataframe(df, timestamp_col=None):
     return df
 
 
+def _is_column_name(s):
+    """Check if a string is a valid column name, including dot-notation for nested fields."""
+    return bool(re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$", s))
+
+
+def _is_nested(col_name):
+    """Check if a column name references a nested field (contains dots)."""
+    return "." in col_name
+
+
 def parse_partition_expr(expr_str):
     """
     Parses a partition expression string into a PySpark column transform.
@@ -106,11 +116,17 @@ def parse_partition_expr(expr_str):
         truncate(n, col)    → F.truncate(n, "col")
         col                 → F.col("col")   (identity partition)
 
+    Nested fields are supported using dot-notation (e.g. metadata.region,
+    days(event.timestamp)). Nested fields are automatically extracted to
+    top-level columns before table creation (metadata.region → metadata_region).
+
     Args:
         expr_str (str): Partition expression string
 
     Returns:
-        Column: PySpark partition transform expression
+        tuple: (partition_transform, nested_col_or_None)
+            - partition_transform: PySpark partition transform expression
+            - nested_col_or_None: Original nested column path if extraction is needed, else None
     """
     expr_str = expr_str.strip()
 
@@ -118,8 +134,13 @@ def parse_partition_expr(expr_str):
     match = re.match(r"^(days|hours|months|years)\((.+)\)$", expr_str)
     if match:
         func_name, col_name = match.group(1), match.group(2).strip()
+        if not _is_column_name(col_name):
+            raise ValueError(f"Invalid column name in partition expression: '{col_name}'")
         transform_fn = getattr(F, func_name)
-        return transform_fn(col_name)
+        if _is_nested(col_name):
+            flat_name = col_name.replace(".", "_")
+            return transform_fn(flat_name), col_name
+        return transform_fn(col_name), None
 
     # bucket(n, col) and truncate(n, col)
     match = re.match(r"^(bucket|truncate)\((\d+)\s*,\s*(.+)\)$", expr_str)
@@ -127,17 +148,26 @@ def parse_partition_expr(expr_str):
         func_name = match.group(1)
         n = int(match.group(2))
         col_name = match.group(3).strip()
+        if not _is_column_name(col_name):
+            raise ValueError(f"Invalid column name in partition expression: '{col_name}'")
         transform_fn = getattr(F, func_name)
-        return transform_fn(n, col_name)
+        if _is_nested(col_name):
+            flat_name = col_name.replace(".", "_")
+            return transform_fn(n, flat_name), col_name
+        return transform_fn(n, col_name), None
 
-    # Identity partition: just a column name
-    if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", expr_str):
-        return F.col(expr_str)
+    # Identity partition: column name (supports dot-notation for nested fields)
+    if _is_column_name(expr_str):
+        if _is_nested(expr_str):
+            flat_name = expr_str.replace(".", "_")
+            return F.col(flat_name), expr_str
+        return F.col(expr_str), None
 
     raise ValueError(
         f"Unsupported partition expression: '{expr_str}'. "
         f"Supported: days(col), hours(col), months(col), years(col), "
-        f"bucket(n, col), truncate(n, col), or col (identity)."
+        f"bucket(n, col), truncate(n, col), or col (identity). "
+        f"Nested fields use dot-notation: metadata.region, days(event.timestamp)"
     )
 
 
@@ -149,14 +179,43 @@ def parse_partition_by(partition_by_list):
         partition_by_list (list[str]): List of partition expression strings
 
     Returns:
-        list[Column]: List of PySpark partition transform expressions
+        tuple: (list[Column], list[str])
+            - List of PySpark partition transform expressions
+            - List of nested column paths that need extraction
     """
     exprs = []
+    nested_cols = []
     for expr_str in partition_by_list:
-        parsed = parse_partition_expr(expr_str)
+        parsed, nested_col = parse_partition_expr(expr_str)
         print(f"  Partition expression: {expr_str}")
+        if nested_col:
+            flat_name = nested_col.replace(".", "_")
+            print(f"    → nested field '{nested_col}' will be extracted to '{flat_name}'")
+            nested_cols.append(nested_col)
         exprs.append(parsed)
-    return exprs
+    return exprs, nested_cols
+
+
+def extract_nested_fields(df, nested_cols):
+    """
+    Extracts nested struct fields to top-level columns for partitioning.
+
+    Iceberg cannot partition directly on nested struct fields, so this function
+    creates top-level columns from nested paths. For example, 'metadata.region'
+    becomes a new column 'metadata_region' with the value of df["metadata"]["region"].
+
+    Args:
+        df: Source DataFrame
+        nested_cols (list[str]): List of dot-notation column paths (e.g. ['metadata.region'])
+
+    Returns:
+        DataFrame: DataFrame with extracted top-level columns added
+    """
+    for nested_col in nested_cols:
+        flat_name = nested_col.replace(".", "_")
+        print(f"Extracting nested field '{nested_col}' → '{flat_name}'")
+        df = df.withColumn(flat_name, F.col(nested_col))
+    return df
 
 
 def create_iceberg_table(spark, df, namespace, table_name, mode="create", partition_exprs=None):
@@ -269,11 +328,16 @@ def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=No
 
         # Parse partition expressions
         partition_exprs = None
+        nested_cols = []
         if partition_by:
             print(f"\nCustom partitioning:")
-            partition_exprs = parse_partition_by(partition_by)
+            partition_exprs, nested_cols = parse_partition_by(partition_by)
         else:
             print(f"\nUsing default partitioning: days(__ingest_ts)")
+
+        # Extract nested fields to top-level columns if needed for partitioning
+        if nested_cols:
+            df = extract_nested_fields(df, nested_cols)
 
         # Write to Iceberg
         fq_table = create_iceberg_table(spark, df, namespace, table_name,
@@ -320,6 +384,12 @@ Examples:
   # Bucket partition (hash-based, good for high-cardinality columns)
   python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by "bucket(16, user_id)"
 
+  # Nested JSON field as partition key (metadata.region → metadata_region column)
+  python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by metadata.region
+
+  # Nested field with time transform
+  python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by "days(event.timestamp)"
+
   # Append to an existing table
   python3 r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --mode append
 
@@ -334,6 +404,12 @@ Supported partition expressions:
   bucket(n, col)      Hash partition into n buckets
   truncate(n, col)    Truncate partition (width n)
   col                 Identity partition (exact column value)
+
+Nested fields (dot-notation):
+  Nested JSON struct fields are supported using dot-notation.
+  They are automatically extracted to top-level columns for partitioning.
+    metadata.region           → extracted as metadata_region
+    days(event.timestamp)     → extracted as event_timestamp, partitioned by day
         """,
     )
 
@@ -352,7 +428,8 @@ Supported partition expressions:
     parser.add_argument("--partition-by", action="append", default=None,
                         help="Partition expression (repeatable). Default: days(__ingest_ts). "
                              "Supports: days(col), hours(col), months(col), years(col), "
-                             "bucket(n, col), truncate(n, col), or col (identity)")
+                             "bucket(n, col), truncate(n, col), or col (identity). "
+                             "Nested fields use dot-notation: metadata.region, days(event.timestamp)")
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip table verification after creation")
 
