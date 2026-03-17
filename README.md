@@ -6,6 +6,7 @@ A collection of Python scripts (examples) for managing Apache Iceberg tables on 
 
 - **Create**: Create namespaces and tables from SQL files
 - **Insert**: Insert data from SQL files, CSV, or Parquet
+- **JSON to Iceberg**: Read JSON files from R2 and convert them to partitioned Iceberg tables with schema inference
 - **Delete**: Delete data with optional cleanup of unreferenced files
 - **Drop**: Drop tables or namespaces with optional purge of all files from R2
 - **Orphan File Removal**: Clean up old snapshots and orphan files for a single table
@@ -123,6 +124,76 @@ python r2dc_insert.py --csv-file data.csv --table my_namespace.users --mode over
 ```bash
 python r2dc_insert.py --show my_namespace.users --limit 20
 ```
+
+### JSON to Iceberg
+
+Reads JSON files from an R2 bucket, infers the schema, and writes a partitioned Iceberg table. By default, tables are partitioned by `days(__ingest_ts)` for R2 SQL compatibility.
+
+**Basic usage — read all JSON from a bucket:**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events
+```
+
+**Read from a specific prefix (folder):**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --prefix logs/2026/03 --namespace analytics --table march_logs
+```
+
+**Use an existing timestamp column for the ingest timestamp:**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --timestamp-col event_time
+```
+
+**Custom partition key — identity partition by a column:**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by category
+```
+
+**Custom partition key — partition by month instead of day:**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by "months(__ingest_ts)"
+```
+
+**Multiple partition keys:**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events \
+  --partition-by "days(__ingest_ts)" --partition-by category
+```
+
+**Hash bucket partition (good for high-cardinality columns):**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by "bucket(16, user_id)"
+```
+
+**Partition by a nested JSON field (e.g. `{"metadata": {"region": "us-east"}}`):**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --partition-by metadata.region
+```
+
+Nested fields are automatically extracted to top-level columns (`metadata.region` → `metadata_region`).
+
+**Append to an existing table:**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --mode append
+```
+
+**Multi-line JSON files:**
+```bash
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --multiline
+```
+
+**Supported partition expressions:**
+
+| Expression | Description |
+|------------|-------------|
+| `days(col)` | Time-based partition by day (R2 SQL compatible) |
+| `hours(col)` | Time-based partition by hour |
+| `months(col)` | Time-based partition by month |
+| `years(col)` | Time-based partition by year |
+| `bucket(n, col)` | Hash partition into n buckets |
+| `truncate(n, col)` | Truncate partition (width n) |
+| `col` | Identity partition (exact column value) |
+| `parent.child` | Nested field (extracted to `parent_child`) |
 
 ### Delete Operations
 
@@ -289,6 +360,7 @@ pyspark/
 ├── r2dc_spark_config.py          # Shared Spark configuration
 ├── r2dc_create.py                # Create namespaces and tables
 ├── r2dc_insert.py                # Insert operations
+├── r2dc_json_to_iceberg.py       # Convert JSON files in R2 to Iceberg tables
 ├── r2dc_delete.py                # Delete operations with cleanup
 ├── r2dc_drop.py                  # Drop tables/namespaces with optional purge to cleanup files
 ├── r2dc_orphan_file_removal.py   # Orphan file cleanup for single table
