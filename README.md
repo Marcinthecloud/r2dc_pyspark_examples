@@ -19,6 +19,8 @@ A collection of Python scripts (examples) for managing Apache Iceberg tables on 
 - Java 8, 11, or 17 (required by PySpark)
 - Cloudflare R2 Data Catalog account
 
+The configured Iceberg 1.11 runtime supports Iceberg table format versions 1, 2, and 3. PySpark is restricted to Spark 3.5 because the bundled Iceberg runtime targets Spark 3.5 and Scala 2.12.
+
 ## Installation
 
 ### 1. Install Java (if not already installed)
@@ -74,7 +76,10 @@ CREATE TABLE IF NOT EXISTS my_namespace.users (
     email STRING,
     created_at TIMESTAMP
 ) PARTITIONED BY (days(created_at))
+TBLPROPERTIES ('format-version' = '3')
 ```
+
+Set the `format-version` table property to `3` when creating a v3 table. Existing tables retain their current format version unless explicitly upgraded with `ALTER TABLE ... SET TBLPROPERTIES ('format-version' = '3')`.
 
 **List all namespaces:**
 ```bash
