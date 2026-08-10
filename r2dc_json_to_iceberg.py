@@ -10,6 +10,8 @@ import argparse
 import re
 import sys
 from datetime import datetime
+from typing import Optional
+
 from pyspark.sql import functions as F
 from pyspark.sql.functions import partitioning as P
 
@@ -104,6 +106,14 @@ def _is_nested(col_name):
     return "." in col_name
 
 
+def _validate_format_version(format_version: Optional[int], mode: str) -> None:
+    """Validate a requested Iceberg format version and write mode."""
+    if format_version is not None and format_version not in (1, 2, 3):
+        raise ValueError("Format version must be 1, 2, or 3")
+    if format_version is not None and mode != "create":
+        raise ValueError("Format version can only be set when mode is 'create'")
+
+
 def parse_partition_expr(expr_str):
     """
     Parses a partition expression string into a PySpark column transform.
@@ -152,6 +162,12 @@ def parse_partition_expr(expr_str):
         nested_col = col_name if _is_nested(col_name) else None
         partition_col = col_name.replace(".", "_") if nested_col else col_name
         return P.bucket(n, partition_col), nested_col
+
+    if re.match(r"^truncate\s*\(", expr_str):
+        raise ValueError(
+            "truncate() partitioning is not available through PySpark 4 WriterV2; "
+            "use a supported transform such as bucket()"
+        )
 
     # Identity partition: column name (supports dot-notation for nested fields)
     if _is_column_name(expr_str):
@@ -235,10 +251,7 @@ def create_iceberg_table(spark, df, namespace, table_name, mode="create", partit
     if partition_exprs is None:
         partition_exprs = [P.days("__ingest_ts")]
 
-    if format_version is not None and format_version not in (1, 2, 3):
-        raise ValueError("Format version must be 1, 2, or 3")
-    if format_version is not None and mode != "create":
-        raise ValueError("Format version can only be set when mode is 'create'")
+    _validate_format_version(format_version, mode)
 
     fq_table = f"{namespace}.{table_name}"
 
@@ -313,10 +326,7 @@ def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=No
     Returns:
         str: Fully qualified table name
     """
-    if format_version is not None and format_version not in (1, 2, 3):
-        raise ValueError("Format version must be 1, 2, or 3")
-    if format_version is not None and mode != "create":
-        raise ValueError("Format version can only be set when mode is 'create'")
+    _validate_format_version(format_version, mode)
 
     if not S3_ACCESS_KEY_ID or not S3_SECRET_ACCESS_KEY:
         print("ERROR: S3 credentials are required in r2dc_spark_config.py to read from R2.")

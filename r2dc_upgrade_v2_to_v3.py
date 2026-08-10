@@ -2,12 +2,17 @@
 
 import argparse
 
+from pyspark.sql import SparkSession
+
 from r2dc_spark_config import get_spark_session
-from r2dc_table_utils import get_table_format_version
+from r2dc_table_utils import get_table_format_version, validate_table_name
 
 
-def upgrade_v2_to_v3(spark, table_name, dry_run=False):
+def upgrade_v2_to_v3(
+    spark: SparkSession, table_name: str, dry_run: bool = False
+) -> bool:
     """Upgrade a v2 table to v3 and return whether it was changed."""
+    table_name = validate_table_name(table_name)
     current_version = get_table_format_version(spark, table_name)
 
     if current_version == 3:

@@ -132,6 +132,53 @@ python r2dc_inspect_row_lineage.py my_namespace.users \
 ```
 
 The utility reports total rows, rows with lineage, distinct and duplicate row IDs, and null row IDs. Iceberg v1 and v2 tables are rejected because row lineage metadata is a v3 feature.
+Treat `--where` values as trusted SQL expressions. The utility rejects SQL statement delimiters and comments, but it does not parse or restrict the expression itself.
+
+### Python API Examples
+
+The v3 utilities can also be imported and used from another Python script. Set `table_format_version=3` to make v3 the default for tables created by that Spark session:
+
+```python
+from r2dc_spark_config import get_spark_session
+from r2dc_table_utils import get_table_format_version
+from r2dc_upgrade_v2_to_v3 import upgrade_v2_to_v3
+
+spark = get_spark_session("IcebergV3Example", table_format_version=3)
+
+try:
+    table = "my_namespace.users"
+    version = get_table_format_version(spark, table)
+    print(f"Current format version: {version}")
+
+    if version == 2:
+        # Validate first, then perform the irreversible metadata upgrade.
+        upgrade_v2_to_v3(spark, table, dry_run=True)
+        changed = upgrade_v2_to_v3(spark, table)
+        print(f"Table upgraded: {changed}")
+finally:
+    spark.stop()
+```
+
+Inspect row lineage and work with the returned summary and DataFrame:
+
+```python
+from r2dc_inspect_row_lineage import inspect_row_lineage
+from r2dc_spark_config import get_spark_session
+
+spark = get_spark_session("RowLineageExample")
+
+try:
+    summary, rows = inspect_row_lineage(
+        spark,
+        "my_namespace.users",
+        where_clause="id >= 100",
+        limit=20,
+    )
+    print(summary)
+    rows.show(truncate=False)
+finally:
+    spark.stop()
+```
 
 ### Insert Operations
 

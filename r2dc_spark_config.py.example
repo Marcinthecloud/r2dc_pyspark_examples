@@ -33,6 +33,8 @@ def get_spark_session(app_name="R2DataCatalogApp", table_format_version=None):
         "org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.11.0",
         "org.apache.iceberg:iceberg-aws-bundle:1.11.0",
     ]
+    # Iceberg's S3FileIO handles vended credentials. Hadoop S3A is only needed
+    # for direct s3a:// access when explicit credentials are configured.
     if S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY:
         packages.append("org.apache.hadoop:hadoop-aws:3.4.1")
 

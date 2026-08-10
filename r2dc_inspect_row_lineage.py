@@ -2,20 +2,42 @@
 
 import argparse
 import json
+from typing import Dict, Optional, Tuple
+
+from pyspark.sql import DataFrame, SparkSession
 
 from r2dc_spark_config import get_spark_session
-from r2dc_table_utils import get_table_format_version
+from r2dc_table_utils import get_table_format_version, validate_table_name
 
 MAX_LINEAGE_ROWS = 10000
+_UNSAFE_WHERE_TOKENS = (";", "--", "/*", "*/")
 
 
-def inspect_row_lineage(spark, table_name, where_clause=None, limit=20):
+def _validate_where_clause(where_clause: Optional[str]) -> Optional[str]:
+    """Reject SQL statement delimiters and comments in a WHERE expression."""
+    if where_clause is None:
+        return None
+    if not isinstance(where_clause, str) or not where_clause.strip():
+        raise ValueError("WHERE clause must be a non-empty SQL expression")
+    if any(token in where_clause for token in _UNSAFE_WHERE_TOKENS):
+        raise ValueError("WHERE clause cannot contain SQL delimiters or comments")
+    return where_clause.strip()
+
+
+def inspect_row_lineage(
+    spark: SparkSession,
+    table_name: str,
+    where_clause: Optional[str] = None,
+    limit: int = 20,
+) -> Tuple[Dict[str, int], DataFrame]:
     """Return row lineage summary information and a sample DataFrame."""
     if not isinstance(limit, int) or not 1 <= limit <= MAX_LINEAGE_ROWS:
         raise ValueError(
             f"Lineage row limit must be between 1 and {MAX_LINEAGE_ROWS}"
         )
 
+    table_name = validate_table_name(table_name)
+    where_clause = _validate_where_clause(where_clause)
     format_version = get_table_format_version(spark, table_name)
     if format_version != 3:
         raise ValueError(
@@ -38,7 +60,7 @@ def inspect_row_lineage(spark, table_name, where_clause=None, limit=20):
         summary["rows_with_lineage"] - summary["distinct_row_ids"]
     )
 
-    rows = spark.sql(
+    sample = spark.sql(
         f"""
         SELECT *, _row_id, _last_updated_sequence_number
         FROM {table_name}{where_sql}
@@ -46,13 +68,14 @@ def inspect_row_lineage(spark, table_name, where_clause=None, limit=20):
         LIMIT {limit}
         """
     )
+    rows = spark.createDataFrame(sample.collect(), schema=sample.schema)
     return summary, rows
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inspect Iceberg v3 row lineage metadata")
     parser.add_argument("table", help="Fully qualified table name (namespace.table)")
-    parser.add_argument("--where", help="Optional SQL WHERE expression")
+    parser.add_argument("--where", help="Optional trusted SQL WHERE expression")
     parser.add_argument("--limit", type=int, default=20, help="Rows to display (default: 20)")
     parser.add_argument("--json", metavar="PATH", help="Write the summary and sampled rows to JSON")
     args = parser.parse_args()

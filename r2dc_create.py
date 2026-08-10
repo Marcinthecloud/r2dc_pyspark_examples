@@ -135,10 +135,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.version and not args.sql_file:
+    if args.version is not None and not args.sql_file:
         parser.error("--version requires --sql-file")
 
-    if args.version:
+    if args.version is not None:
         spark = get_spark_session(
             "R2DataCatalog-Create", table_format_version=args.version
         )
