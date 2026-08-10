@@ -11,6 +11,7 @@ import re
 import sys
 from datetime import datetime
 from pyspark.sql import functions as F
+from pyspark.sql.functions import partitioning as P
 
 
 def build_s3a_path(bucket, prefix=None):
@@ -108,12 +109,11 @@ def parse_partition_expr(expr_str):
     Parses a partition expression string into a PySpark column transform.
 
     Supported formats:
-        days(col)           → F.days("col")
-        hours(col)          → F.hours("col")
-        months(col)         → F.months("col")
-        years(col)          → F.years("col")
-        bucket(n, col)      → F.bucket(n, "col")
-        truncate(n, col)    → F.truncate(n, "col")
+        days(col)           → P.days("col")
+        hours(col)          → P.hours("col")
+        months(col)         → P.months("col")
+        years(col)          → P.years("col")
+        bucket(n, col)      → P.bucket(n, "col")
         col                 → F.col("col")   (identity partition)
 
     Nested fields are supported using dot-notation (e.g. metadata.region,
@@ -136,25 +136,22 @@ def parse_partition_expr(expr_str):
         func_name, col_name = match.group(1), match.group(2).strip()
         if not _is_column_name(col_name):
             raise ValueError(f"Invalid column name in partition expression: '{col_name}'")
-        transform_fn = getattr(F, func_name)
+        transform_fn = getattr(P, func_name)
         if _is_nested(col_name):
             flat_name = col_name.replace(".", "_")
             return transform_fn(flat_name), col_name
         return transform_fn(col_name), None
 
-    # bucket(n, col) and truncate(n, col)
-    match = re.match(r"^(bucket|truncate)\((\d+)\s*,\s*(.+)\)$", expr_str)
+    # bucket(n, col)
+    match = re.match(r"^bucket\((\d+)\s*,\s*(.+)\)$", expr_str)
     if match:
-        func_name = match.group(1)
-        n = int(match.group(2))
-        col_name = match.group(3).strip()
+        n = int(match.group(1))
+        col_name = match.group(2).strip()
         if not _is_column_name(col_name):
             raise ValueError(f"Invalid column name in partition expression: '{col_name}'")
-        transform_fn = getattr(F, func_name)
-        if _is_nested(col_name):
-            flat_name = col_name.replace(".", "_")
-            return transform_fn(n, flat_name), col_name
-        return transform_fn(n, col_name), None
+        nested_col = col_name if _is_nested(col_name) else None
+        partition_col = col_name.replace(".", "_") if nested_col else col_name
+        return P.bucket(n, partition_col), nested_col
 
     # Identity partition: column name (supports dot-notation for nested fields)
     if _is_column_name(expr_str):
@@ -166,7 +163,7 @@ def parse_partition_expr(expr_str):
     raise ValueError(
         f"Unsupported partition expression: '{expr_str}'. "
         f"Supported: days(col), hours(col), months(col), years(col), "
-        f"bucket(n, col), truncate(n, col), or col (identity). "
+        f"bucket(n, col), or col (identity). "
         f"Nested fields use dot-notation: metadata.region, days(event.timestamp)"
     )
 
@@ -229,14 +226,14 @@ def create_iceberg_table(spark, df, namespace, table_name, mode="create", partit
         namespace (str): Target namespace
         table_name (str): Target table name
         mode (str): 'create' (fail if exists), 'append' (add to existing), 'overwrite' (replace data)
-        partition_exprs (list[Column]): Partition transform expressions. Defaults to [F.days("__ingest_ts")].
+        partition_exprs (list[Column]): Partition transform expressions. Defaults to [P.days("__ingest_ts")].
         format_version (int): Iceberg format version for a newly created table.
 
     Returns:
         str: Fully qualified table name
     """
     if partition_exprs is None:
-        partition_exprs = [F.days("__ingest_ts")]
+        partition_exprs = [P.days("__ingest_ts")]
 
     if format_version is not None and format_version not in (1, 2, 3):
         raise ValueError("Format version must be 1, 2, or 3")
@@ -418,7 +415,6 @@ Supported partition expressions:
   months(col)         Time-based partition by month
   years(col)          Time-based partition by year
   bucket(n, col)      Hash partition into n buckets
-  truncate(n, col)    Truncate partition (width n)
   col                 Identity partition (exact column value)
 
 Nested fields (dot-notation):
@@ -446,7 +442,7 @@ Nested fields (dot-notation):
     parser.add_argument("--partition-by", action="append", default=None,
                         help="Partition expression (repeatable). Default: days(__ingest_ts). "
                              "Supports: days(col), hours(col), months(col), years(col), "
-                             "bucket(n, col), truncate(n, col), or col (identity). "
+                             "bucket(n, col), or col (identity). "
                              "Nested fields use dot-notation: metadata.region, days(event.timestamp)")
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip table verification after creation")

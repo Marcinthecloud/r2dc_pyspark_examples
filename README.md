@@ -17,11 +17,11 @@ A collection of Python scripts (examples) for managing Apache Iceberg tables on 
 
 ## Prerequisites
 
-- Python 3.8+
-- Java 8, 11, or 17 (required by PySpark)
+- Python 3.9+
+- Java 17 or 21 (required by PySpark 4)
 - Cloudflare R2 Data Catalog account
 
-The configured Iceberg 1.11 runtime supports Iceberg table format versions 1, 2, and 3. PySpark is restricted to Spark 3.5 because the bundled Iceberg runtime targets Spark 3.5 and Scala 2.12.
+The configured Iceberg 1.11 runtime supports Iceberg table format versions 1, 2, and 3. PySpark is restricted to Spark 4.0 because the bundled Iceberg runtime targets Spark 4.0 and Scala 2.13. Spark 4 also enables Iceberg v3 types such as `variant`.
 
 ## Installation
 
@@ -56,6 +56,9 @@ S3_ACCESS_KEY_ID = "key"
 S3_SECRET_ACCESS_KEY = "secret"  
 S3_ENDPOINT = "https://<account_id>.r2.cloudflarestorage.com/" 
 ```
+
+The Hadoop S3A package is loaded only when direct S3 credentials are configured. Catalog operations that use vended credentials do not load Hadoop's additional AWS SDK bundle.
+
 ## Usage
 
 ### Create Operations
@@ -232,7 +235,6 @@ python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table ev
 | `months(col)` | Time-based partition by month |
 | `years(col)` | Time-based partition by year |
 | `bucket(n, col)` | Hash partition into n buckets |
-| `truncate(n, col)` | Truncate partition (width n) |
 | `col` | Identity partition (exact column value) |
 | `parent.child` | Nested field (extracted to `parent_child`) |
 
