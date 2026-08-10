@@ -10,7 +10,10 @@ import argparse
 import re
 import sys
 from datetime import datetime
+from typing import Optional
+
 from pyspark.sql import functions as F
+from pyspark.sql.functions import partitioning as P
 
 
 def build_s3a_path(bucket, prefix=None):
@@ -103,17 +106,24 @@ def _is_nested(col_name):
     return "." in col_name
 
 
+def _validate_format_version(format_version: Optional[int], mode: str) -> None:
+    """Validate a requested Iceberg format version and write mode."""
+    if format_version is not None and format_version not in (1, 2, 3):
+        raise ValueError("Format version must be 1, 2, or 3")
+    if format_version is not None and mode != "create":
+        raise ValueError("Format version can only be set when mode is 'create'")
+
+
 def parse_partition_expr(expr_str):
     """
     Parses a partition expression string into a PySpark column transform.
 
     Supported formats:
-        days(col)           → F.days("col")
-        hours(col)          → F.hours("col")
-        months(col)         → F.months("col")
-        years(col)          → F.years("col")
-        bucket(n, col)      → F.bucket(n, "col")
-        truncate(n, col)    → F.truncate(n, "col")
+        days(col)           → P.days("col")
+        hours(col)          → P.hours("col")
+        months(col)         → P.months("col")
+        years(col)          → P.years("col")
+        bucket(n, col)      → P.bucket(n, "col")
         col                 → F.col("col")   (identity partition)
 
     Nested fields are supported using dot-notation (e.g. metadata.region,
@@ -136,25 +146,28 @@ def parse_partition_expr(expr_str):
         func_name, col_name = match.group(1), match.group(2).strip()
         if not _is_column_name(col_name):
             raise ValueError(f"Invalid column name in partition expression: '{col_name}'")
-        transform_fn = getattr(F, func_name)
+        transform_fn = getattr(P, func_name)
         if _is_nested(col_name):
             flat_name = col_name.replace(".", "_")
             return transform_fn(flat_name), col_name
         return transform_fn(col_name), None
 
-    # bucket(n, col) and truncate(n, col)
-    match = re.match(r"^(bucket|truncate)\((\d+)\s*,\s*(.+)\)$", expr_str)
+    # bucket(n, col)
+    match = re.match(r"^bucket\((\d+)\s*,\s*(.+)\)$", expr_str)
     if match:
-        func_name = match.group(1)
-        n = int(match.group(2))
-        col_name = match.group(3).strip()
+        n = int(match.group(1))
+        col_name = match.group(2).strip()
         if not _is_column_name(col_name):
             raise ValueError(f"Invalid column name in partition expression: '{col_name}'")
-        transform_fn = getattr(F, func_name)
-        if _is_nested(col_name):
-            flat_name = col_name.replace(".", "_")
-            return transform_fn(n, flat_name), col_name
-        return transform_fn(n, col_name), None
+        nested_col = col_name if _is_nested(col_name) else None
+        partition_col = col_name.replace(".", "_") if nested_col else col_name
+        return P.bucket(n, partition_col), nested_col
+
+    if re.match(r"^truncate\s*\(", expr_str):
+        raise ValueError(
+            "truncate() partitioning is not available through PySpark 4 WriterV2; "
+            "use a supported transform such as bucket()"
+        )
 
     # Identity partition: column name (supports dot-notation for nested fields)
     if _is_column_name(expr_str):
@@ -166,7 +179,7 @@ def parse_partition_expr(expr_str):
     raise ValueError(
         f"Unsupported partition expression: '{expr_str}'. "
         f"Supported: days(col), hours(col), months(col), years(col), "
-        f"bucket(n, col), truncate(n, col), or col (identity). "
+        f"bucket(n, col), or col (identity). "
         f"Nested fields use dot-notation: metadata.region, days(event.timestamp)"
     )
 
@@ -218,7 +231,8 @@ def extract_nested_fields(df, nested_cols):
     return df
 
 
-def create_iceberg_table(spark, df, namespace, table_name, mode="create", partition_exprs=None):
+def create_iceberg_table(spark, df, namespace, table_name, mode="create", partition_exprs=None,
+                         format_version=None):
     """
     Creates a partitioned Iceberg table and writes the data.
 
@@ -228,13 +242,16 @@ def create_iceberg_table(spark, df, namespace, table_name, mode="create", partit
         namespace (str): Target namespace
         table_name (str): Target table name
         mode (str): 'create' (fail if exists), 'append' (add to existing), 'overwrite' (replace data)
-        partition_exprs (list[Column]): Partition transform expressions. Defaults to [F.days("__ingest_ts")].
+        partition_exprs (list[Column]): Partition transform expressions. Defaults to [P.days("__ingest_ts")].
+        format_version (int): Iceberg format version for a newly created table.
 
     Returns:
         str: Fully qualified table name
     """
     if partition_exprs is None:
-        partition_exprs = [F.days("__ingest_ts")]
+        partition_exprs = [P.days("__ingest_ts")]
+
+    _validate_format_version(format_version, mode)
 
     fq_table = f"{namespace}.{table_name}"
 
@@ -246,6 +263,8 @@ def create_iceberg_table(spark, df, namespace, table_name, mode="create", partit
         print(f"Creating table '{fq_table}'")
         writer = df.writeTo(fq_table).using("iceberg")
         writer = writer.partitionedBy(*partition_exprs)
+        if format_version is not None:
+            writer = writer.tableProperty("format-version", str(format_version))
         writer.create()
     elif mode == "append":
         print(f"Appending to table '{fq_table}'")
@@ -287,7 +306,7 @@ def verify_table(spark, fq_table, limit=5):
 
 def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=None,
                     mode="create", multiline=False, sample_ratio=None, verify=True,
-                    partition_by=None):
+                    partition_by=None, format_version=None):
     """
     End-to-end: reads JSON from R2 and writes it as a partitioned Iceberg table.
 
@@ -302,10 +321,13 @@ def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=No
         sample_ratio (float): Optional sampling ratio for schema inference
         verify (bool): Whether to verify the table after creation
         partition_by (list[str]): Optional partition expressions. Defaults to ['days(__ingest_ts)'].
+        format_version (int): Iceberg format version for a newly created table.
 
     Returns:
         str: Fully qualified table name
     """
+    _validate_format_version(format_version, mode)
+
     if not S3_ACCESS_KEY_ID or not S3_SECRET_ACCESS_KEY:
         print("ERROR: S3 credentials are required in r2dc_spark_config.py to read from R2.")
         print("Set S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY.")
@@ -341,7 +363,8 @@ def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=No
 
         # Write to Iceberg
         fq_table = create_iceberg_table(spark, df, namespace, table_name,
-                                        mode=mode, partition_exprs=partition_exprs)
+                                        mode=mode, partition_exprs=partition_exprs,
+                                        format_version=format_version)
 
         # Verify
         if verify:
@@ -402,7 +425,6 @@ Supported partition expressions:
   months(col)         Time-based partition by month
   years(col)          Time-based partition by year
   bucket(n, col)      Hash partition into n buckets
-  truncate(n, col)    Truncate partition (width n)
   col                 Identity partition (exact column value)
 
 Nested fields (dot-notation):
@@ -421,6 +443,8 @@ Nested fields (dot-notation):
                         help="Existing column to use as __ingest_ts (otherwise current_timestamp is used)")
     parser.add_argument("--mode", default="create", choices=["create", "append", "overwrite"],
                         help="Write mode: create (default), append, or overwrite")
+    parser.add_argument("-v", "--version", type=int, choices=[1, 2, 3],
+                        help="Iceberg format version for a newly created table")
     parser.add_argument("--multiline", action="store_true",
                         help="Enable multi-line JSON parsing (for pretty-printed JSON files)")
     parser.add_argument("--sample-ratio", type=float, default=None,
@@ -428,12 +452,15 @@ Nested fields (dot-notation):
     parser.add_argument("--partition-by", action="append", default=None,
                         help="Partition expression (repeatable). Default: days(__ingest_ts). "
                              "Supports: days(col), hours(col), months(col), years(col), "
-                             "bucket(n, col), truncate(n, col), or col (identity). "
+                             "bucket(n, col), or col (identity). "
                              "Nested fields use dot-notation: metadata.region, days(event.timestamp)")
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip table verification after creation")
 
     args = parser.parse_args()
+
+    if args.version and args.mode != "create":
+        parser.error("--version can only be used with --mode create")
 
     json_to_iceberg(
         bucket=args.bucket,
@@ -446,4 +473,5 @@ Nested fields (dot-notation):
         sample_ratio=args.sample_ratio,
         verify=not args.no_verify,
         partition_by=args.partition_by,
+        format_version=args.version,
     )

@@ -18,19 +18,29 @@ S3_ENDPOINT = None  #IE "https://<account-id>.r2.cloudflarestorage.com"
 
 # SSL Certificate Configuration (for Cloudflare WARP users)
 
-def get_spark_session(app_name="R2DataCatalogApp"):
+def get_spark_session(app_name="R2DataCatalogApp", table_format_version=None):
     """
     Creates and returns a Spark session configured for R2 Data Catalog with Apache Iceberg.
 
     Args:
         app_name (str): Name of the Spark application
+        table_format_version (int): Optional default format version for newly created tables
 
     Returns:
         SparkSession: Configured Spark session
     """
+    packages = [
+        "org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.11.0",
+        "org.apache.iceberg:iceberg-aws-bundle:1.11.0",
+    ]
+    # Iceberg's S3FileIO handles vended credentials. Hadoop S3A is only needed
+    # for direct s3a:// access when explicit credentials are configured.
+    if S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY:
+        packages.append("org.apache.hadoop:hadoop-aws:3.4.1")
+
     builder = SparkSession.builder \
         .appName(app_name) \
-        .config('spark.jars.packages', 'org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1,org.apache.iceberg:iceberg-aws-bundle:1.6.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262') \
+        .config('spark.jars.packages', ','.join(packages)) \
         .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
@@ -43,6 +53,14 @@ def get_spark_session(app_name="R2DataCatalogApp"):
         .config("spark.sql.catalog.r2dc.s3.remote-signing-enabled", "false") \
         .config("spark.sql.defaultCatalog", "r2dc")
 
+    if table_format_version is not None:
+        if table_format_version not in (1, 2, 3):
+            raise ValueError("Table format version must be 1, 2, or 3")
+        builder = builder.config(
+            "spark.sql.catalog.r2dc.table-default.format-version",
+            str(table_format_version),
+        )
+
     # Configure S3 credentials if provided (enables orphan file cleanup)
     if S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY:
         builder = builder \
@@ -52,6 +70,7 @@ def get_spark_session(app_name="R2DataCatalogApp"):
         if S3_ENDPOINT:
             builder = builder \
                 .config("spark.hadoop.fs.s3a.endpoint", S3_ENDPOINT) \
+                .config("spark.hadoop.fs.s3a.endpoint.region", "auto") \
                 .config("spark.hadoop.fs.s3a.path.style.access", "true")
     else:
         print("S3 credentials not configured - using vended credentials (orphan file cleanup may not work)")
