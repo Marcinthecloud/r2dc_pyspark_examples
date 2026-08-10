@@ -218,7 +218,8 @@ def extract_nested_fields(df, nested_cols):
     return df
 
 
-def create_iceberg_table(spark, df, namespace, table_name, mode="create", partition_exprs=None):
+def create_iceberg_table(spark, df, namespace, table_name, mode="create", partition_exprs=None,
+                         format_version=None):
     """
     Creates a partitioned Iceberg table and writes the data.
 
@@ -229,12 +230,18 @@ def create_iceberg_table(spark, df, namespace, table_name, mode="create", partit
         table_name (str): Target table name
         mode (str): 'create' (fail if exists), 'append' (add to existing), 'overwrite' (replace data)
         partition_exprs (list[Column]): Partition transform expressions. Defaults to [F.days("__ingest_ts")].
+        format_version (int): Iceberg format version for a newly created table.
 
     Returns:
         str: Fully qualified table name
     """
     if partition_exprs is None:
         partition_exprs = [F.days("__ingest_ts")]
+
+    if format_version is not None and format_version not in (1, 2, 3):
+        raise ValueError("Format version must be 1, 2, or 3")
+    if format_version is not None and mode != "create":
+        raise ValueError("Format version can only be set when mode is 'create'")
 
     fq_table = f"{namespace}.{table_name}"
 
@@ -246,6 +253,8 @@ def create_iceberg_table(spark, df, namespace, table_name, mode="create", partit
         print(f"Creating table '{fq_table}'")
         writer = df.writeTo(fq_table).using("iceberg")
         writer = writer.partitionedBy(*partition_exprs)
+        if format_version is not None:
+            writer = writer.tableProperty("format-version", str(format_version))
         writer.create()
     elif mode == "append":
         print(f"Appending to table '{fq_table}'")
@@ -287,7 +296,7 @@ def verify_table(spark, fq_table, limit=5):
 
 def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=None,
                     mode="create", multiline=False, sample_ratio=None, verify=True,
-                    partition_by=None):
+                    partition_by=None, format_version=None):
     """
     End-to-end: reads JSON from R2 and writes it as a partitioned Iceberg table.
 
@@ -302,10 +311,16 @@ def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=No
         sample_ratio (float): Optional sampling ratio for schema inference
         verify (bool): Whether to verify the table after creation
         partition_by (list[str]): Optional partition expressions. Defaults to ['days(__ingest_ts)'].
+        format_version (int): Iceberg format version for a newly created table.
 
     Returns:
         str: Fully qualified table name
     """
+    if format_version is not None and format_version not in (1, 2, 3):
+        raise ValueError("Format version must be 1, 2, or 3")
+    if format_version is not None and mode != "create":
+        raise ValueError("Format version can only be set when mode is 'create'")
+
     if not S3_ACCESS_KEY_ID or not S3_SECRET_ACCESS_KEY:
         print("ERROR: S3 credentials are required in r2dc_spark_config.py to read from R2.")
         print("Set S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY.")
@@ -341,7 +356,8 @@ def json_to_iceberg(bucket, namespace, table_name, prefix=None, timestamp_col=No
 
         # Write to Iceberg
         fq_table = create_iceberg_table(spark, df, namespace, table_name,
-                                        mode=mode, partition_exprs=partition_exprs)
+                                        mode=mode, partition_exprs=partition_exprs,
+                                        format_version=format_version)
 
         # Verify
         if verify:
@@ -421,6 +437,8 @@ Nested fields (dot-notation):
                         help="Existing column to use as __ingest_ts (otherwise current_timestamp is used)")
     parser.add_argument("--mode", default="create", choices=["create", "append", "overwrite"],
                         help="Write mode: create (default), append, or overwrite")
+    parser.add_argument("-v", "--version", type=int, choices=[1, 2, 3],
+                        help="Iceberg format version for a newly created table")
     parser.add_argument("--multiline", action="store_true",
                         help="Enable multi-line JSON parsing (for pretty-printed JSON files)")
     parser.add_argument("--sample-ratio", type=float, default=None,
@@ -435,6 +453,9 @@ Nested fields (dot-notation):
 
     args = parser.parse_args()
 
+    if args.version and args.mode != "create":
+        parser.error("--version can only be used with --mode create")
+
     json_to_iceberg(
         bucket=args.bucket,
         namespace=args.namespace,
@@ -446,4 +467,5 @@ Nested fields (dot-notation):
         sample_ratio=args.sample_ratio,
         verify=not args.no_verify,
         partition_by=args.partition_by,
+        format_version=args.version,
     )

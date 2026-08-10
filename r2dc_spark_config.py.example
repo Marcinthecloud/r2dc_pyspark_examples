@@ -18,12 +18,13 @@ S3_ENDPOINT = None  #IE "https://<account-id>.r2.cloudflarestorage.com"
 
 # SSL Certificate Configuration (for Cloudflare WARP users)
 
-def get_spark_session(app_name="R2DataCatalogApp"):
+def get_spark_session(app_name="R2DataCatalogApp", table_format_version=None):
     """
     Creates and returns a Spark session configured for R2 Data Catalog with Apache Iceberg.
 
     Args:
         app_name (str): Name of the Spark application
+        table_format_version (int): Optional default format version for newly created tables
 
     Returns:
         SparkSession: Configured Spark session
@@ -42,6 +43,14 @@ def get_spark_session(app_name="R2DataCatalogApp"):
         .config("spark.sql.catalog.r2dc.header.X-Iceberg-Access-Delegation", "vended-credentials") \
         .config("spark.sql.catalog.r2dc.s3.remote-signing-enabled", "false") \
         .config("spark.sql.defaultCatalog", "r2dc")
+
+    if table_format_version is not None:
+        if table_format_version not in (1, 2, 3):
+            raise ValueError("Table format version must be 1, 2, or 3")
+        builder = builder.config(
+            "spark.sql.catalog.r2dc.table-default.format-version",
+            str(table_format_version),
+        )
 
     # Configure S3 credentials if provided (enables orphan file cleanup)
     if S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY:

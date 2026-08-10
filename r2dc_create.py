@@ -127,13 +127,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Create namespaces and tables in Iceberg catalog')
     parser.add_argument('--namespace', help='Create a namespace with this name')
     parser.add_argument('--sql-file', help='Path to SQL file containing CREATE TABLE statement')
+    parser.add_argument('-v', '--version', type=int, choices=[1, 2, 3],
+                        help='Iceberg format version for a table created with --sql-file')
     parser.add_argument('--list-namespaces', action='store_true', help='List all namespaces')
     parser.add_argument('--list-tables', help='List tables in specified namespace')
     parser.add_argument('--describe', help='Describe a table (provide table name)')
 
     args = parser.parse_args()
 
-    spark = get_spark_session("R2DataCatalog-Create")
+    if args.version and not args.sql_file:
+        parser.error("--version requires --sql-file")
+
+    if args.version:
+        spark = get_spark_session(
+            "R2DataCatalog-Create", table_format_version=args.version
+        )
+    else:
+        spark = get_spark_session("R2DataCatalog-Create")
 
     try:
         if args.namespace:

@@ -11,6 +11,8 @@ A collection of Python scripts (examples) for managing Apache Iceberg tables on 
 - **Drop**: Drop tables or namespaces with optional purge of all files from R2
 - **Orphan File Removal**: Clean up old snapshots and orphan files for a single table
 - **File Analysis**: Analyze Iceberg table metadata to determine if compaction or re-partitioning is needed
+- **Format Upgrade**: Safely validate and upgrade Iceberg v2 tables to v3
+- **Row Lineage**: Inspect v3 row IDs and update sequence numbers
 - **Spark Config Example**: Centralized Spark config example
 
 ## Prerequisites
@@ -65,7 +67,7 @@ python r2dc_create.py --namespace my_namespace
 
 **Create a table from SQL file:**
 ```bash
-python r2dc_create.py --sql-file create_table.sql
+python r2dc_create.py --sql-file create_table.sql --version 3
 ```
 
 Example `create_table.sql`:
@@ -76,10 +78,9 @@ CREATE TABLE IF NOT EXISTS my_namespace.users (
     email STRING,
     created_at TIMESTAMP
 ) PARTITIONED BY (days(created_at))
-TBLPROPERTIES ('format-version' = '3')
 ```
 
-Set the `format-version` table property to `3` when creating a v3 table. Existing tables retain their current format version unless explicitly upgraded with `ALTER TABLE ... SET TBLPROPERTIES ('format-version' = '3')`.
+Use `-v` or `--version` with values `1`, `2`, or `3` to set the default format version for a table created from SQL. An explicit `format-version` in the SQL file takes precedence.
 
 **List all namespaces:**
 ```bash
@@ -95,6 +96,39 @@ python r2dc_create.py --list-tables my_namespace
 ```bash
 python r2dc_create.py --describe my_namespace.users
 ```
+
+### Upgrade V2 to V3
+
+Validate an upgrade without changing the table:
+
+```bash
+python r2dc_upgrade_v2_to_v3.py my_namespace.users --dry-run
+```
+
+Upgrade the table:
+
+```bash
+python r2dc_upgrade_v2_to_v3.py my_namespace.users --yes
+```
+
+The upgrade is a metadata-only operation. It is not reversible, and all engines that access the table must support Iceberg v3. Existing snapshots are not changed, so their rows initially have null row IDs; a later snapshot may assign inherited IDs to existing data files. Running the utility against an existing v3 table is safe and makes no change; v1 tables are rejected.
+
+### Inspect Row Lineage
+
+Show row IDs and last-update sequence numbers for a v3 table:
+
+```bash
+python r2dc_inspect_row_lineage.py my_namespace.users --limit 20
+```
+
+Filter rows or save the results as JSON:
+
+```bash
+python r2dc_inspect_row_lineage.py my_namespace.users \
+  --where "id >= 100" --json lineage.json
+```
+
+The utility reports total rows, rows with lineage, distinct and duplicate row IDs, and null row IDs. Iceberg v1 and v2 tables are rejected because row lineage metadata is a v3 feature.
 
 ### Insert Operations
 
@@ -136,8 +170,10 @@ Reads JSON files from an R2 bucket, infers the schema, and writes a partitioned 
 
 **Basic usage — read all JSON from a bucket:**
 ```bash
-python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events
+python r2dc_json_to_iceberg.py --bucket my-data --namespace analytics --table events --version 3
 ```
+
+Use `-v` or `--version` with values `1`, `2`, or `3` when using the default `--mode create`. Version selection is rejected for append and overwrite because those modes operate on an existing table.
 
 **Read from a specific prefix (folder):**
 ```bash
@@ -370,6 +406,9 @@ pyspark/
 ├── r2dc_drop.py                  # Drop tables/namespaces with optional purge to cleanup files
 ├── r2dc_orphan_file_removal.py   # Orphan file cleanup for single table
 ├── r2dc_file_analysis.py         # Iceberg file analysis & compaction advisor
+├── r2dc_upgrade_v2_to_v3.py      # Upgrade an Iceberg v2 table to v3
+├── r2dc_inspect_row_lineage.py   # Inspect Iceberg v3 row lineage
+├── r2dc_table_utils.py           # Shared Iceberg table property helpers
 ├── requirements.txt              # Python dependencies
 └── README.md                     # This file
 ```
